@@ -1,0 +1,20 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Environment variables (bot tokens)
+.env
+
+# Python cache & temp files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temp download folder if any
+tg_bot_vids_*/
+downloads/
+
+# IDE settings
+.vscode/
+.idea/
