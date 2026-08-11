@@ -3,6 +3,7 @@ import html
 import json
 import os
 import re
+import subprocess
 import uuid
 import tempfile
 import logging
@@ -50,13 +51,60 @@ def extract_instagram_shortcode(url: str) -> Optional[str]:
     return match.group(1) if match else None
 
 async def download_file_aiohttp(url: str, filepath: str, headers: dict) -> None:
-    timeout = aiohttp.ClientTimeout(sock_read=30)
+    timeout = aiohttp.ClientTimeout(total=120, sock_read=90)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url, headers=headers) as resp:
             resp.raise_for_status()
             with open(filepath, 'wb') as f:
                 async for chunk in resp.content.iter_chunked(8192):
                     f.write(chunk)
+
+def _has_audio_stream(filepath: str) -> bool:
+    """Check if a video file contains an audio stream using ffprobe."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', filepath],
+            capture_output=True, text=True, timeout=10
+        )
+        return 'audio' in result.stdout
+    except Exception:
+        return True  # Assume audio exists if ffprobe fails
+
+async def _merge_audio_into_video(video_path: str, audio_url: str, output_dir: str, headers: dict) -> str:
+    """Download separate audio track and merge it into a video file using ffmpeg."""
+    audio_path = os.path.join(output_dir, f"{uuid.uuid4()}_audio.mp3")
+    merged_path = os.path.join(output_dir, f"{uuid.uuid4()}_merged.mp4")
+    
+    try:
+        await download_file_aiohttp(audio_url, audio_path, headers)
+        
+        loop = asyncio.get_running_loop()
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-i', audio_path,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-shortest',
+            merged_path
+        ]
+        await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True, timeout=60))
+        
+        if os.path.exists(merged_path) and os.path.getsize(merged_path) > 0:
+            os.remove(video_path)
+            os.remove(audio_path)
+            logger.info(f"Successfully merged audio into video: {os.path.getsize(merged_path) / 1024 / 1024:.2f} MB")
+            return merged_path
+    except Exception as e:
+        logger.warning(f"Audio merge failed: {e}")
+        for f in [audio_path, merged_path]:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+    
+    return video_path  # Return original if merge fails
 
 async def _instagram_fallback_download(url: str, output_dir: str) -> MediaInfo:
     """Fallback downloader for Instagram photo posts/carousels via Instaloader."""
@@ -226,7 +274,7 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
 
     data = None
     last_msg = ""
-    timeout = aiohttp.ClientTimeout(sock_read=30)
+    timeout = aiohttp.ClientTimeout(total=60, sock_read=45)
     
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for attempt in range(3):
@@ -283,6 +331,15 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
     file_id = f"{uuid.uuid4()}.mp4"
     filepath = os.path.join(output_dir, file_id)
     await download_file_aiohttp(video_url, filepath, headers)
+
+    # Verify audio stream exists; if not, merge music track
+    if not _has_audio_stream(filepath):
+        music_url = p_data.get("music")
+        if music_url:
+            logger.info("Video has no audio stream. Merging music track...")
+            filepath = await _merge_audio_into_video(filepath, music_url, output_dir, headers)
+        else:
+            logger.warning("Video has no audio and no music URL available.")
 
     check_file_size_limit(filepath)
 
