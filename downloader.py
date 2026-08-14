@@ -349,6 +349,13 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
     file_id = str(uuid.uuid4())
     output_template = os.path.join(output_dir, f"{file_id}.%(ext)s")
     
+    youtube_extractor_args = {
+        'youtube': {
+            'player_client': ['android', 'ios', 'mweb'],
+            'player_skip': ['webpage', 'configs'],
+        }
+    }
+
     if format_type == "audio":
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -356,6 +363,9 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            'extractor_args': youtube_extractor_args,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -365,12 +375,15 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
         }
     else:
         ydl_opts = {
-            'format': 'bestvideo[acodec!=none]+bestaudio/best[acodec!=none]/best',
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
             'merge_output_format': 'mp4',
             'outtmpl': output_template,
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            'extractor_args': youtube_extractor_args,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         

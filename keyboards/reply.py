@@ -1,12 +1,6 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardRemove
 
-def get_main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text="🚀 Start"),
-                KeyboardButton(text="ℹ️ Help"),
-            ]
-        ],
-        resize_keyboard=True
-    )
+def get_main_keyboard() -> ReplyKeyboardRemove:
+    """Returns ReplyKeyboardRemove to hide bottom keyboard buttons."""
+    return ReplyKeyboardRemove()
+

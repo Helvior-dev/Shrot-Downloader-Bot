@@ -26,23 +26,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-async def clean_expired_sessions_task():
-    """Background task to remove expired URL sessions every 60 seconds (TTL: 5 mins)."""
-    while True:
-        await asyncio.sleep(60)
-        try:
-            now = time.time()
-            expired_keys = [
-                k for k, v in downloader.url_sessions.items()
-                if now - v["time"] > 300  # 5 minutes TTL
-            ]
-            for k in expired_keys:
-                downloader.url_sessions.pop(k, None)
-            if expired_keys:
-                logger.info(f"Cleaned up {len(expired_keys)} expired sessions.")
-        except Exception as e:
-            logger.error(f"Error in session cleanup task: {e}")
-
 async def clean_temp_directories_task():
     """Background task to clean orphaned temp directories periodically."""
     # Also clean up right on startup
@@ -114,7 +97,6 @@ async def main() -> None:
         asyncio.create_task(self_pinger_task())
 
     # Start background cleanup tasks
-    asyncio.create_task(clean_expired_sessions_task())
     asyncio.create_task(clean_temp_directories_task())
 
     bot = Bot(token=BOT_TOKEN)
