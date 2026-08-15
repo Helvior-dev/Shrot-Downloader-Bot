@@ -345,6 +345,34 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
 
     return MediaInfo(filepath=filepath, title=title[:100], duration=p_data.get("duration"), uploader=uploader, width=None, height=None, media_type="video")
 
+def get_cookiefile_path() -> Optional[str]:
+    """Find cookies file from explicit path, current folder, Render secrets, or env variable."""
+    # 1. Explicit path from env
+    env_path = os.getenv("YOUTUBE_COOKIES_PATH") or os.getenv("COOKIES_FILE")
+    if env_path and os.path.exists(env_path):
+        return env_path
+        
+    # 2. Default cookies.txt in current directory
+    if os.path.exists("cookies.txt"):
+        return "cookies.txt"
+        
+    # 3. Render Secret File default mount path: /etc/secrets/cookies.txt
+    if os.path.exists("/etc/secrets/cookies.txt"):
+        return "/etc/secrets/cookies.txt"
+        
+    # 4. Raw cookies string passed in YOUTUBE_COOKIES env var
+    raw_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
+    if raw_cookies:
+        cookie_path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+        try:
+            with open(cookie_path, "w", encoding="utf-8") as f:
+                f.write(raw_cookies)
+            return cookie_path
+        except Exception as e:
+            logger.warning(f"Failed to write cookies from env: {e}")
+            
+    return None
+
 def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook: Optional[Callable[[dict], None]] = None) -> MediaInfo:
     file_id = str(uuid.uuid4())
     output_template = os.path.join(output_dir, f"{file_id}.%(ext)s")
@@ -355,6 +383,10 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
             'player_skip': ['webpage', 'configs'],
         }
     }
+
+    cookie_file = get_cookiefile_path()
+    if cookie_file:
+        logger.info(f"Using cookies file: {cookie_file}")
 
     if format_type == "audio":
         ydl_opts = {
@@ -387,6 +419,9 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+
     if progress_hook:
         ydl_opts['progress_hooks'] = [progress_hook]
 
@@ -484,6 +519,115 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
             media_type=actual_media_type
         )
 
+def extract_youtube_id(url: str) -> Optional[str]:
+    """Extract YouTube video ID from various YouTube URL formats."""
+    clean_url = html.unescape(url).strip()
+    match = re.search(r'(?:v=|\/shorts\/|\/embed\/|\/v\/|youtu\.be\/|\/watch\?v=|\/e\/)([^&#?/\s]+)', clean_url)
+    if match:
+        return match.group(1)
+    return None
+
+async def _youtube_rapidapi_download(url: str, output_dir: str, format_type: str = "video") -> MediaInfo:
+    """Download YouTube video/audio using RapidAPI YouTube Media Downloader."""
+    api_key = os.getenv("RAPIDAPI_KEY") or os.getenv("X_RAPIDAPI_KEY") or os.getenv("RAPID_API_KEY") or os.getenv("X-RapidAPI-Key")
+    if not api_key:
+        raise DownloadError("No RAPIDAPI_KEY configured.")
+
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        raise DownloadError("Could not extract YouTube video ID.")
+
+    api_url = f"https://youtube-media-downloader.p.rapidapi.com/v2/video/details?videoId={video_id}"
+    headers = {
+        "x-rapidapi-key": api_key.strip(),
+        "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com"
+    }
+
+    timeout = aiohttp.ClientTimeout(total=60, sock_read=45)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(api_url, headers=headers) as resp:
+            if resp.status == 429:
+                raise DownloadError("RapidAPI rate limit exceeded.")
+            resp.raise_for_status()
+            data = await resp.json()
+
+    if not data or data.get("status") is False:
+        err_msg = data.get("message") or data.get("error") or "Failed to fetch video details from API"
+        raise DownloadError(f"RapidAPI error: {err_msg}")
+
+    title = data.get("title") or "YouTube Video"
+    uploader = data.get("owner", {}).get("name") or data.get("channelTitle") or data.get("author") or "YouTube"
+    duration = data.get("lengthSeconds") or data.get("duration")
+    if duration:
+        try:
+            duration = int(duration)
+        except (ValueError, TypeError):
+            duration = None
+
+    audios = data.get("audios", {}).get("items", []) if isinstance(data.get("audios"), dict) else []
+    videos = data.get("videos", {}).get("items", []) if isinstance(data.get("videos"), dict) else []
+
+    download_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+    if format_type == "audio":
+        audio_url = None
+        if audios:
+            audio_url = audios[0].get("url")
+        elif videos:
+            with_audio = [v for v in videos if v.get("hasAudio")]
+            audio_url = with_audio[0].get("url") if with_audio else videos[0].get("url")
+
+        if not audio_url:
+            raise DownloadError("No audio track found in API response.")
+
+        file_id = f"{uuid.uuid4()}.mp3"
+        filepath = os.path.join(output_dir, file_id)
+        await download_file_aiohttp(audio_url, filepath, download_headers)
+        return MediaInfo(
+            filepath=filepath,
+            title=title[:100],
+            duration=duration,
+            uploader=uploader,
+            width=None,
+            height=None,
+            media_type="audio"
+        )
+
+    # Video download
+    target_video_url = None
+    separate_audio_url = None
+
+    with_audio = [v for v in videos if v.get("hasAudio") and v.get("url")]
+    if with_audio:
+        target_video_url = with_audio[0].get("url")
+    elif videos:
+        target_video_url = videos[0].get("url")
+        if audios and audios[0].get("url"):
+            separate_audio_url = audios[0].get("url")
+
+    if not target_video_url:
+        raise DownloadError("No video download URL found in API response.")
+
+    file_id = f"{uuid.uuid4()}.mp4"
+    filepath = os.path.join(output_dir, file_id)
+    await download_file_aiohttp(target_video_url, filepath, download_headers)
+
+    if separate_audio_url and not _has_audio_stream(filepath):
+        logger.info("RapidAPI: Merging separate audio into YouTube video...")
+        filepath = await _merge_audio_into_video(filepath, separate_audio_url, output_dir, download_headers)
+
+    check_file_size_limit(filepath)
+
+    return MediaInfo(
+        filepath=filepath,
+        title=title[:100],
+        duration=duration,
+        uploader=uploader,
+        width=None,
+        height=None,
+        media_type="video"
+    )
+
 async def download_media(url: str, format_type: str = "video", progress_callback: Optional[Callable[[str], None]] = None) -> MediaInfo:
     """Async wrapper for media downloading."""
     temp_dir = tempfile.mkdtemp(prefix="tg_bot_vids_")
@@ -523,6 +667,15 @@ async def download_media(url: str, format_type: str = "video", progress_callback
                 return await _pinterest_fallback_download(url, temp_dir)
             except Exception as e:
                 logger.info(f"Pinterest fallback failed ({e}), trying yt-dlp...")
+
+        elif "youtube.com" in url.lower() or "youtu.be" in url.lower():
+            api_key = os.getenv("RAPIDAPI_KEY") or os.getenv("X_RAPIDAPI_KEY") or os.getenv("RAPID_API_KEY") or os.getenv("X-RapidAPI-Key")
+            if api_key:
+                try:
+                    logger.info("Using RapidAPI for YouTube download...")
+                    return await _youtube_rapidapi_download(url, temp_dir, format_type)
+                except Exception as e:
+                    logger.warning(f"RapidAPI YouTube download failed ({e}), falling back to yt-dlp...")
 
         # Run yt-dlp in executor
         return await loop.run_in_executor(None, _yt_dlp_download, url, temp_dir, format_type, yt_dlp_progress_hook)

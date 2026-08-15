@@ -14,6 +14,8 @@ __pycache__/
 # Temp download folder if any
 tg_bot_vids_*/
 downloads/
+*cookies*.txt
+cookies.txt
 
 # IDE settings
 .vscode/
