@@ -1,33 +1,44 @@
-# Telegram Media Downloader Bot
+# 📥 Telegram Media Downloader Bot
 
-A fast, lightweight Telegram bot that automatically downloads media (videos, photos, and carousels) from popular social networks directly into Telegram without ads or watermarks.
+A fast, lightweight, and robust Telegram bot that downloads media (videos, photos, and photo carousels) from popular social networks directly into Telegram in original quality without watermarks.
 
-## Features
+---
 
-- **Direct Instant Download**: Just send a link — the bot automatically detects whether it's a video, photo, or photo carousel and downloads it immediately.
-- **Photo & Carousel Support**: Full HD photo and multi-image gallery support for Instagram, TikTok, and Pinterest.
-- **Access Control**: Can be restricted to specific Telegram usernames or user IDs via `ALLOWED_USERS`.
-- **Resource Management**: Automatically cleans up temporary files after sending them to the user.
-- **Concurrency Locks**: Prevents multiple parallel downloads from the same user to avoid spam and save bandwidth.
-- **Render Ready**: Includes a background health check and self-pinger to prevent sleep on cloud platforms like Render.
+## ✨ Features
 
-## Supported Platforms
+- ⚡ **Direct Instant Download**: Just send a link — no annoying format buttons or confirmation dialogs. The bot automatically identifies whether it's a video, single photo, or photo carousel and sends it directly.
+- 🖼️ **Photo & Carousel Support**: Full HD photo downloads and multi-image galleries (carousels) with background music for TikTok and Instagram.
+- 🔒 **Whitelist Access Control**: Restrict bot usage to specific Telegram usernames or user IDs via `ALLOWED_USERS`.
+- 🧹 **Automatic Resource Cleanup**: Temporary files and folders are immediately purged after upload to keep server storage minimal.
+- 🛡️ **Anti-Spam Concurrency Locks**: Prevents multiple concurrent downloads from the same user to avoid rate-limiting.
+- ☁️ **Cloud Ready (Render / Railway / VPS)**: Built-in aiohttp HTTP server and self-pinger task to prevent free instances from sleeping.
+- 🇬🇧 **100% English UI**: Clean, localized messages with live progress percentages.
 
-| Platform | Supported Media |
-| :--- | :--- |
-| **TikTok** | Videos & Photo Carousels (with original audio) |
-| **Instagram** | Reels, Videos, Single Photos & Carousels |
-| **Pinterest** | Photos & Videos |
-| **Twitter / X** | Videos & Photos |
+---
 
-## Requirements
+## 🌐 Supported Platforms
+
+| Platform | Supported Media | Features |
+| :--- | :--- | :--- |
+| **TikTok** | Videos & Photo Slideshows | Original audio merged, watermark-free |
+| **Instagram** | Reels, Videos, Photos & Carousels | Full HD quality, fast download |
+| **Pinterest** | Photos & Videos | Direct media extraction |
+| **Twitter / X** | Videos & Photos | Highest available bitrate |
+
+> **Note**: YouTube downloading is intentionally disabled to ensure 100% stable, cookie-free hosting on cloud datacenters (like Render).
+
+---
+
+## 📋 Requirements
 
 - Python 3.10+
-- FFmpeg (must be installed and added to system PATH)
+- **FFmpeg** (installed and added to system PATH)
 
 Built with `aiogram 3`, `yt-dlp`, `aiohttp`, and `Instaloader`.
 
-## Setup & Running
+---
+
+## 🚀 Setup & Running
 
 ### 1. Local Installation
 
@@ -38,20 +49,23 @@ Built with `aiogram 3`, `yt-dlp`, `aiohttp`, and `Instaloader`.
    ```
 
 2. **Configure environment variables:**
-   Create a `.env` file from `.env.example`:
+   Create a `.env` file based on `.env.example`:
    ```env
-   BOT_TOKEN=your_telegram_bot_token_from_botfather
-   # Optional: comma-separated list of allowed user IDs or usernames
-   ALLOWED_USERS=123456789, your_username
+   # Telegram Bot Token from @BotFather
+   BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ
+
+   # Optional: Allowed Telegram Usernames or IDs (comma-separated). Leave empty to allow everyone.
+   ALLOWED_USERS=your_username, friend_username, 123456789
+
    # Optional: Telegram sticker ID to show while downloading
    LOADING_STICKER_ID=
    ```
 
-3. **Create and activate virtual environment (`.venv`):**
+3. **Create and activate a virtual environment (`.venv`):**
    * **Windows (PowerShell):**
      ```powershell
      python -m venv .venv
-     Set-ExecutionPolicy -Scope CurrentUser RemoteSigned  # Required once on fresh Windows
+     Set-ExecutionPolicy -Scope CurrentUser RemoteSigned  # Run once if scripts are disabled
      .\.venv\Scripts\Activate.ps1
      ```
    * **Linux / macOS:**
@@ -68,24 +82,33 @@ Built with `aiogram 3`, `yt-dlp`, `aiohttp`, and `Instaloader`.
 5. **Start the bot:**
    ```bash
    python bot.py
-   # Or directly on Windows:
-   # .\.venv\Scripts\python.exe bot.py
    ```
 
 ---
 
-### 2. Deployment on Render
+### 2. Cloud Deployment (Render.com)
 
-1. Push your code to GitHub.
-2. In [Render](https://dashboard.render.com), create a new **Web Service**.
+1. Push your code to your GitHub repository.
+2. In the [Render Dashboard](https://dashboard.render.com), click **New +** -> **Web Service**.
 3. Connect your repository.
-4. Set the **Build Command**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-5. Set the **Start Command**:
-   ```bash
-   python bot.py
-   ```
-6. Add your **Environment Variables** in Render Dashboard (`BOT_TOKEN`, `ALLOWED_USERS`, etc.).
-7. Deploy!
+4. Configure service settings:
+   - **Environment**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python bot.py`
+5. In the **Environment Variables** section, add:
+   - `BOT_TOKEN` = `your_bot_token_from_botfather`
+   - `ALLOWED_USERS` = `your_username, other_user`
+6. Click **Deploy Web Service**.
+
+---
+
+## 🤖 Bot Commands
+
+- `/start` — Welcome message and instructions.
+- `/help` — List of supported social media platforms.
+
+---
+
+## 📄 License
+
+MIT License. Free to use, modify, and distribute.
