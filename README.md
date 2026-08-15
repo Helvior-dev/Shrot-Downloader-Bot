@@ -1,11 +1,10 @@
 # Telegram Media Downloader Bot
 
-A fast, lightweight Telegram bot that automatically downloads media (videos, photos, and carousels) from popular social networks directly into Telegram without ads, watermarks, or unnecessary format selection prompts.
+A fast, lightweight Telegram bot that automatically downloads media (videos, photos, and carousels) from popular social networks directly into Telegram without ads or watermarks.
 
 ## Features
 
 - **Direct Instant Download**: Just send a link — the bot automatically detects whether it's a video, photo, or photo carousel and downloads it immediately.
-- **YouTube Anti-Bot Bypass**: Uses optimized mobile extractor clients (`ios`, `android`, `mweb`) to bypass "Sign in to confirm you're not a bot" checks without requiring cookies.
 - **Photo & Carousel Support**: Full HD photo and multi-image gallery support for Instagram, TikTok, and Pinterest.
 - **Access Control**: Can be restricted to specific Telegram usernames or user IDs via `ALLOWED_USERS`.
 - **Resource Management**: Automatically cleans up temporary files after sending them to the user.
@@ -16,9 +15,8 @@ A fast, lightweight Telegram bot that automatically downloads media (videos, pho
 
 | Platform | Supported Media |
 | :--- | :--- |
-| **TikTok** | Videos & Photo Carousels |
+| **TikTok** | Videos & Photo Carousels (with original audio) |
 | **Instagram** | Reels, Videos, Single Photos & Carousels |
-| **YouTube** | Shorts & Standard Videos |
 | **Pinterest** | Photos & Videos |
 | **Twitter / X** | Videos & Photos |
 
@@ -70,7 +68,7 @@ Built with `aiogram 3`, `yt-dlp`, `aiohttp`, and `Instaloader`.
 5. **Start the bot:**
    ```bash
    python bot.py
-   # Or directly on Windows without activation:
+   # Or directly on Windows:
    # .\.venv\Scripts\python.exe bot.py
    ```
 

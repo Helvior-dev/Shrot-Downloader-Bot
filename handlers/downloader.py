@@ -19,7 +19,6 @@ URL_REGEX = re.compile(
     r'https?://(?:www\.)?(?:'
     r'tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|'
     r'instagram\.com/(?:reel|reels|p|tv)|'
-    r'youtube\.com/shorts|youtu\.be|youtube\.com/watch|'
     r'pinterest\.com|pin\.it|'
     r'x\.com|twitter\.com'
     r')/[^\s]+',
@@ -40,19 +39,34 @@ async def process_video_link(message: Message, bot: Bot) -> None:
         )
         return
 
+    text = message.text.strip()
+
+    # Explicitly block YouTube links
+    if "youtube.com" in text.lower() or "youtu.be" in text.lower():
+        await message.answer(
+            "❌ <b>YouTube downloading is disabled</b>\n\n"
+            "The bot supports downloading from:\n"
+            "• <b>TikTok</b> (Videos & Photo Carousels)\n"
+            "• <b>Instagram</b> (Reels, Photos & Carousels)\n"
+            "• <b>Pinterest</b> (Photos & Videos)\n"
+            "• <b>Twitter / X</b> (Videos & Photos)",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+        return
+
     user_id = message.from_user.id
     if user_id in active_downloads:
         await message.answer("⏳ Please wait until the current download finishes!")
         return
 
-    text = message.text.strip()
     match = URL_REGEX.search(text)
     if not match:
         if text.startswith("http://") or text.startswith("https://"):
             url = text
         else:
             await message.answer(
-                "Send me a link to TikTok, Instagram, Pinterest, Shorts, or X 😉",
+                "Send me a link to TikTok, Instagram, Pinterest, or X 😉",
                 reply_markup=get_main_keyboard()
             )
             return

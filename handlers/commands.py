@@ -44,7 +44,6 @@ async def command_help_handler(message: Message) -> None:
         "🌐 <b>Supported Platforms:</b>\n"
         "• <b>TikTok</b> (Videos & Photo Carousels)\n"
         "• <b>Instagram</b> (Reels, Videos, Photos & Carousels)\n"
-        "• <b>YouTube Shorts / Video</b>\n"
         "• <b>Pinterest</b> (Photos & Videos)\n"
         "• <b>Twitter / X</b> (Videos & Photos)\n\n"
         "Just send any link to download directly 🚀"
