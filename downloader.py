@@ -267,30 +267,49 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
     )
 
 async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str = "video") -> MediaInfo:
-    """Fallback downloader for TikTok posts (photos, videos, audio) via TikWM API with auto-retry."""
+    """Fallback downloader for TikTok posts (photos, videos, audio) via multi-endpoint TikWM API with retry."""
     clean_url = html.unescape(url).strip()
-    api_url = f"https://tikwm.com/api/?url={urllib.parse.quote(clean_url)}"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': 'https://www.tikwm.com/',
+        'Origin': 'https://www.tikwm.com',
+    }
+
+    endpoints = [
+        ("POST", "https://www.tikwm.com/api/", {"url": clean_url, "hd": "1"}),
+        ("POST", "https://tikwm.com/api/", {"url": clean_url, "hd": "1"}),
+        ("GET", f"https://www.tikwm.com/api/?url={urllib.parse.quote(clean_url)}&hd=1", None),
+        ("GET", f"https://api.tikwm.org/api/?url={urllib.parse.quote(clean_url)}&hd=1", None),
+    ]
 
     data = None
     last_msg = ""
-    timeout = aiohttp.ClientTimeout(total=60, sock_read=45)
+    timeout = aiohttp.ClientTimeout(total=45, sock_read=30)
     
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for attempt in range(3):
+        for method, endpoint_url, payload in endpoints:
             try:
-                async with session.get(api_url, headers=headers) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-                if data and data.get("code") == 0 and data.get("data"):
-                    break
-                last_msg = data.get("msg", "API limit reached") if data else "No response"
-                if attempt < 2:
-                    await asyncio.sleep(1.3)
+                if method == "POST":
+                    async with session.post(endpoint_url, data=payload, headers=headers) as resp:
+                        if resp.status == 200:
+                            res_json = await resp.json()
+                            if res_json and res_json.get("code") == 0 and res_json.get("data"):
+                                data = res_json
+                                break
+                            last_msg = res_json.get("msg", "API response error") if res_json else "Empty response"
+                else:
+                    async with session.get(endpoint_url, headers=headers) as resp:
+                        if resp.status == 200:
+                            res_json = await resp.json()
+                            if res_json and res_json.get("code") == 0 and res_json.get("data"):
+                                data = res_json
+                                break
+                            last_msg = res_json.get("msg", "API response error") if res_json else "Empty response"
             except Exception as e:
                 last_msg = str(e)
-                if attempt < 2:
-                    await asyncio.sleep(1.3)
+                continue
 
     if not data or data.get("code") != 0 or not data.get("data"):
         raise DownloadError(f"TikTok fallback error: {last_msg}")
@@ -300,13 +319,18 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
     uploader = p_data.get("author", {}).get("nickname") or p_data.get("author", {}).get("unique_id") or "TikTok User"
     images = p_data.get("images", [])
 
+    download_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Referer': 'https://www.tiktok.com/'
+    }
+
     if format_type == "audio":
         audio_url = p_data.get("music") or p_data.get("play")
         if not audio_url:
             raise DownloadError("No audio track found in TikTok post.")
         file_id = f"{uuid.uuid4()}.mp3"
         filepath = os.path.join(output_dir, file_id)
-        await download_file_aiohttp(audio_url, filepath, headers)
+        await download_file_aiohttp(audio_url, filepath, download_headers)
         return MediaInfo(filepath=filepath, title=title[:100], duration=p_data.get("duration"), uploader=uploader, width=None, height=None, media_type="audio")
 
     # If post contains photo carousel / images
@@ -315,7 +339,7 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
         for i, img_url in enumerate(images):
             file_id = f"{uuid.uuid4()}_{i}.jpg"
             filepath = os.path.join(output_dir, file_id)
-            await download_file_aiohttp(img_url, filepath, headers)
+            await download_file_aiohttp(img_url, filepath, download_headers)
             downloaded_paths.append(filepath)
 
         if len(downloaded_paths) == 1:
@@ -323,21 +347,21 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
         else:
             return MediaInfo(filepath=None, title=title[:100], duration=None, uploader=uploader, width=None, height=None, media_type="carousel", image_paths=downloaded_paths)
 
-    # Video post download
-    video_url = p_data.get("play") or p_data.get("wmplay")
+    # Video post download (prefer HD video if available)
+    video_url = p_data.get("hdplay") or p_data.get("play") or p_data.get("wmplay")
     if not video_url:
         raise DownloadError("No video URL found in TikTok post.")
 
     file_id = f"{uuid.uuid4()}.mp4"
     filepath = os.path.join(output_dir, file_id)
-    await download_file_aiohttp(video_url, filepath, headers)
+    await download_file_aiohttp(video_url, filepath, download_headers)
 
     # Verify audio stream exists; if not, merge music track
     if not _has_audio_stream(filepath):
         music_url = p_data.get("music")
         if music_url:
             logger.info("Video has no audio stream. Merging music track...")
-            filepath = await _merge_audio_into_video(filepath, music_url, output_dir, headers)
+            filepath = await _merge_audio_into_video(filepath, music_url, output_dir, download_headers)
         else:
             logger.warning("Video has no audio and no music URL available.")
 
@@ -358,7 +382,7 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
             'socket_timeout': 30,
             'geo_bypass': True,
             'nocheckcertificate': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -375,7 +399,7 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
             'socket_timeout': 30,
             'geo_bypass': True,
             'nocheckcertificate': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
         }
         
     if progress_hook:
