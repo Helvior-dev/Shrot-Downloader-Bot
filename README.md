@@ -20,7 +20,7 @@ A fast, lightweight, and robust Telegram bot that downloads media (videos, photo
 
 | Platform | Supported Media | Features |
 | :--- | :--- | :--- |
-| **TikTok** | Videos & Photo Slideshows | Original audio merged, watermark-free |
+| **TikTok** | Videos & Photo Slideshows | Auto-unshorten links, multi-source fallback, no watermark, audio merged |
 | **Instagram** | Reels, Videos, Photos & Carousels | Full HD quality, fast download |
 | **Pinterest** | Photos & Videos | Direct media extraction |
 | **Twitter / X** | Videos & Photos | Highest available bitrate |
@@ -59,6 +59,9 @@ Built with `aiogram 3`, `yt-dlp`, `aiohttp`, and `Instaloader`.
 
    # Optional: Telegram sticker ID to show while downloading
    LOADING_STICKER_ID=
+
+   # Optional: Proxy (HTTP/HTTPS/SOCKS5) for cloud hosting (Render/VPS)
+   PROXY_URL=
    ```
 
 3. **Create and activate a virtual environment (`.venv`):**

@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 URL_REGEX = re.compile(
-    r'https?://(?:www\.)?(?:'
-    r'tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|'
-    r'instagram\.com/(?:reel|reels|p|tv)|'
-    r'pinterest\.com|pin\.it|'
+    r'https?://(?:[a-zA-Z0-9-]+\.)?(?:'
+    r'tiktok\.com|'
+    r'instagram\.com/(?:reel|reels|p|tv|share)|'
+    r'pinterest\.(?:com|[a-z]{2,3})|pin\.it|'
     r'x\.com|twitter\.com'
     r')/[^\s]+',
     re.IGNORECASE
@@ -120,6 +120,8 @@ async def process_video_link(message: Message, bot: Bot) -> None:
             clean_error = re.sub(r'\x1b\[[0-9;]*m', '', str(e))
             if "Unsupported URL" in clean_error:
                 clean_error = "Unsupported URL or private video. Make sure the link is correct."
+            elif "Unexpected response" in clean_error or "extractor" in clean_error.lower():
+                clean_error = "The platform temporarily restricted direct access or the video is private/unavailable. Please try again in a few moments."
             if progress_msg:
                 await progress_msg.edit_text(f"❌ Download failed.\n\nDetails: {html.quote(clean_error)}")
             return

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Max file size for Telegram Bot API (50 MB)
 MAX_FILE_SIZE = 50 * 1024 * 1024
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
+PROXY_URL = os.getenv("PROXY_URL") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
 
 @dataclass
 class MediaInfo:
@@ -47,13 +48,15 @@ def check_file_size_limit(filepath: str):
 
 def extract_instagram_shortcode(url: str) -> Optional[str]:
     """Extract Instagram shortcode from post/reel/tv URL."""
-    match = re.search(r'/(?:p|reel|reels|tv)/([^/?#&]+)', url)
+    match = re.search(r'/(?:p|reel|reels|tv|share)/([^/?#&]+)', url)
     return match.group(1) if match else None
 
-async def download_file_aiohttp(url: str, filepath: str, headers: dict) -> None:
+async def download_file_aiohttp(url: str, filepath: str, headers: dict, proxy: Optional[str] = None) -> None:
+    """Download binary file with aiohttp using optional proxy."""
+    target_proxy = proxy or PROXY_URL
     timeout = aiohttp.ClientTimeout(total=120, sock_read=90)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(url, headers=headers, proxy=target_proxy) as resp:
             resp.raise_for_status()
             with open(filepath, 'wb') as f:
                 async for chunk in resp.content.iter_chunked(8192):
@@ -68,7 +71,7 @@ def _has_audio_stream(filepath: str) -> bool:
         )
         return 'audio' in result.stdout
     except Exception:
-        return True  # Assume audio exists if ffprobe fails
+        return True  # Assume audio exists if ffprobe fails or is missing
 
 async def _merge_audio_into_video(video_path: str, audio_url: str, output_dir: str, headers: dict) -> str:
     """Download separate audio track and merge it into a video file using ffmpeg."""
@@ -105,6 +108,28 @@ async def _merge_audio_into_video(video_path: str, audio_url: str, output_dir: s
                     pass
     
     return video_path  # Return original if merge fails
+
+async def _expand_short_url(url: str) -> str:
+    """Follow HTTP redirects for shortened or mobile share links (e.g. vm.tiktok.com, vt.tiktok.com, /t/, pin.it)."""
+    clean_url = html.unescape(url).strip()
+    if not any(domain in clean_url.lower() for domain in ["vm.tiktok.com", "vt.tiktok.com", "tiktok.com/t/", "pin.it", "t.co", "bit.ly"]):
+        return clean_url
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    }
+    timeout = aiohttp.ClientTimeout(total=8)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(clean_url, allow_redirects=True, proxy=PROXY_URL) as resp:
+                final_url = str(resp.url)
+                if final_url and len(final_url) > 10:
+                    logger.debug(f"Expanded short URL: {clean_url} -> {final_url}")
+                    return final_url
+    except Exception as e:
+        logger.debug(f"Failed to expand short URL {clean_url}: {e}")
+    return clean_url
 
 async def _instagram_fallback_download(url: str, output_dir: str) -> MediaInfo:
     """Fallback downloader for Instagram photo posts/carousels via Instaloader."""
@@ -195,7 +220,7 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
     timeout = aiohttp.ClientTimeout(sock_read=30)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url, headers=headers, proxy=PROXY_URL) as resp:
                 resp.raise_for_status()
                 content = await resp.text()
     except Exception as e:
@@ -266,10 +291,9 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
         media_type=media_type
     )
 
-async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str = "video") -> MediaInfo:
-    """Fallback downloader for TikTok posts (photos, videos, audio) via multi-endpoint TikWM API with retry."""
+async def _tiktok_tikwm_download(url: str, output_dir: str, format_type: str = "video") -> Optional[MediaInfo]:
+    """Download TikTok content via multi-endpoint TikWM API."""
     clean_url = html.unescape(url).strip()
-    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/javascript, */*; q=0.01',
@@ -280,39 +304,33 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
     endpoints = [
         ("POST", "https://www.tikwm.com/api/", {"url": clean_url, "hd": "1"}),
         ("POST", "https://tikwm.com/api/", {"url": clean_url, "hd": "1"}),
-        ("GET", f"https://www.tikwm.com/api/?url={urllib.parse.quote(clean_url)}&hd=1", None),
-        ("GET", f"https://api.tikwm.org/api/?url={urllib.parse.quote(clean_url)}&hd=1", None),
+        ("GET", f"https://tikwm.com/api/?url={urllib.parse.quote(clean_url)}&hd=1", None),
     ]
 
     data = None
-    last_msg = ""
-    timeout = aiohttp.ClientTimeout(total=45, sock_read=30)
-    
+    timeout = aiohttp.ClientTimeout(total=25, sock_read=15)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for method, endpoint_url, payload in endpoints:
             try:
                 if method == "POST":
-                    async with session.post(endpoint_url, data=payload, headers=headers) as resp:
+                    async with session.post(endpoint_url, data=payload, headers=headers, proxy=PROXY_URL) as resp:
                         if resp.status == 200:
                             res_json = await resp.json()
                             if res_json and res_json.get("code") == 0 and res_json.get("data"):
                                 data = res_json
                                 break
-                            last_msg = res_json.get("msg", "API response error") if res_json else "Empty response"
                 else:
-                    async with session.get(endpoint_url, headers=headers) as resp:
+                    async with session.get(endpoint_url, headers=headers, proxy=PROXY_URL) as resp:
                         if resp.status == 200:
                             res_json = await resp.json()
                             if res_json and res_json.get("code") == 0 and res_json.get("data"):
                                 data = res_json
                                 break
-                            last_msg = res_json.get("msg", "API response error") if res_json else "Empty response"
-            except Exception as e:
-                last_msg = str(e)
+            except Exception:
                 continue
 
     if not data or data.get("code") != 0 or not data.get("data"):
-        raise DownloadError(f"TikTok fallback error: {last_msg}")
+        return None
 
     p_data = data["data"]
     title = p_data.get("title", "TikTok Post")
@@ -320,14 +338,14 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
     images = p_data.get("images", [])
 
     download_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'User-Agent': headers['User-Agent'],
         'Referer': 'https://www.tiktok.com/'
     }
 
     if format_type == "audio":
         audio_url = p_data.get("music") or p_data.get("play")
         if not audio_url:
-            raise DownloadError("No audio track found in TikTok post.")
+            return None
         file_id = f"{uuid.uuid4()}.mp3"
         filepath = os.path.join(output_dir, file_id)
         await download_file_aiohttp(audio_url, filepath, download_headers)
@@ -350,24 +368,110 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
     # Video post download (prefer HD video if available)
     video_url = p_data.get("hdplay") or p_data.get("play") or p_data.get("wmplay")
     if not video_url:
-        raise DownloadError("No video URL found in TikTok post.")
+        return None
 
     file_id = f"{uuid.uuid4()}.mp4"
     filepath = os.path.join(output_dir, file_id)
     await download_file_aiohttp(video_url, filepath, download_headers)
 
-    # Verify audio stream exists; if not, merge music track
+    # Verify audio stream exists; if silent/missing, merge music track
     if not _has_audio_stream(filepath):
         music_url = p_data.get("music")
         if music_url:
             logger.info("Video has no audio stream. Merging music track...")
             filepath = await _merge_audio_into_video(filepath, music_url, output_dir, download_headers)
-        else:
-            logger.warning("Video has no audio and no music URL available.")
 
     check_file_size_limit(filepath)
-
     return MediaInfo(filepath=filepath, title=title[:100], duration=p_data.get("duration"), uploader=uploader, width=None, height=None, media_type="video")
+
+async def _tiktok_ssstik_download(url: str, output_dir: str, format_type: str = "video") -> Optional[MediaInfo]:
+    """Secondary fallback downloader for TikTok via SSSTik."""
+    clean_url = html.unescape(url).strip()
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
+    }
+    timeout = aiohttp.ClientTimeout(total=25, sock_read=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get("https://ssstik.io/en", headers=headers, proxy=PROXY_URL) as r:
+                if r.status != 200:
+                    return None
+                html_text = await r.text()
+                tt_match = re.search(r'data-hx-vals=["\']\{[^}]*tt:\s*[\'"]([^\'"]+)[\'"]', html_text) or re.search(r'"tt":"([^"]+)"', html_text)
+                tt_val = tt_match.group(1) if tt_match else "0"
+
+                post_headers = headers.copy()
+                post_headers['HX-Request'] = 'true'
+                post_headers['HX-Trigger'] = '_search'
+                post_headers['HX-Target'] = 'target'
+                post_headers['HX-Current-URL'] = 'https://ssstik.io/en'
+                post_headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+
+                async with s.post("https://ssstik.io/abc?url=dl", data={"id": clean_url, "locale": "en", "tt": tt_val}, headers=post_headers, proxy=PROXY_URL) as r_post:
+                    if r_post.status != 200:
+                        return None
+                    post_html = await r_post.text()
+
+                title_match = re.search(r'<h2>([^<]+)</h2>', post_html) or re.search(r'<p class="maintext">([^<]+)</p>', post_html)
+                title = title_match.group(1).strip() if title_match else "TikTok Post"
+
+                if format_type == "audio":
+                    audio_links = re.findall(r'href="(https?://[^"]+/m/[^"]+)"', post_html) or re.findall(r'href="([^"]+)"[^>]*class="[^"]*(?:download_link|pure-button)[^"]*music[^"]*"', post_html)
+                    if not audio_links:
+                        return None
+                    file_id = f"{uuid.uuid4()}.mp3"
+                    filepath = os.path.join(output_dir, file_id)
+                    await download_file_aiohttp(audio_links[0], filepath, headers)
+                    return MediaInfo(filepath=filepath, title=title[:100], duration=None, uploader="TikTok User", width=None, height=None, media_type="audio")
+
+                # Check if video download links exist
+                video_links = [l for l in re.findall(r'href="(https?://[^"]+)"[^>]*class="[^"]*(?:download_link|pure-button)[^"]*"', post_html) if "/m/" not in l and "#" not in l]
+                if video_links:
+                    file_id = f"{uuid.uuid4()}.mp4"
+                    filepath = os.path.join(output_dir, file_id)
+                    await download_file_aiohttp(video_links[0], filepath, headers)
+                    check_file_size_limit(filepath)
+                    return MediaInfo(filepath=filepath, title=title[:100], duration=None, uploader="TikTok User", width=None, height=None, media_type="video")
+
+                # Check photo slideshows
+                img_links = re.findall(r'href="(https?://[^"]+)"[^>]*class="[^"]*download_link[^"]*"[^>]*download', post_html) or re.findall(r'<img[^>]+src="(https?://[^"]+)"[^>]*class="slide', post_html)
+                if img_links:
+                    downloaded_paths = []
+                    for i, img_url in enumerate(img_links):
+                        file_id = f"{uuid.uuid4()}_{i}.jpg"
+                        filepath = os.path.join(output_dir, file_id)
+                        await download_file_aiohttp(img_url, filepath, headers)
+                        downloaded_paths.append(filepath)
+                    if len(downloaded_paths) == 1:
+                        return MediaInfo(filepath=downloaded_paths[0], title=title[:100], duration=None, uploader="TikTok User", width=None, height=None, media_type="photo")
+                    return MediaInfo(filepath=None, title=title[:100], duration=None, uploader="TikTok User", width=None, height=None, media_type="carousel", image_paths=downloaded_paths)
+
+    except Exception as e:
+        logger.debug(f"SSSTik fallback error: {e}")
+        return None
+    return None
+
+async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str = "video") -> MediaInfo:
+    """Multi-tiered TikTok downloader: expands URLs and cascades through TikWM and SSSTik."""
+    expanded_url = await _expand_short_url(url)
+    
+    # Tier 1: TikWM API
+    try:
+        info = await _tiktok_tikwm_download(expanded_url, output_dir, format_type)
+        if info:
+            return info
+    except Exception as e:
+        logger.debug(f"TikWM Tier 1 error: {e}")
+
+    # Tier 2: SSSTik Scraper Gateway
+    try:
+        info = await _tiktok_ssstik_download(expanded_url, output_dir, format_type)
+        if info:
+            return info
+    except Exception as e:
+        logger.debug(f"SSSTik Tier 2 error: {e}")
+
+    raise DownloadError("All specialized TikTok resolvers failed to retrieve media.")
 
 def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook: Optional[Callable[[dict], None]] = None) -> MediaInfo:
     file_id = str(uuid.uuid4())
@@ -402,6 +506,9 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
         }
         
+    if PROXY_URL:
+        ydl_opts['proxy'] = PROXY_URL
+
     if progress_hook:
         ydl_opts['progress_hooks'] = [progress_hook]
 
@@ -500,7 +607,7 @@ def _yt_dlp_download(url: str, output_dir: str, format_type: str, progress_hook:
         )
 
 async def download_media(url: str, format_type: str = "video", progress_callback: Optional[Callable[[str], None]] = None) -> MediaInfo:
-    """Async wrapper for media downloading (TikTok, Instagram, Pinterest, Twitter/X)."""
+    """Async unified entrypoint for media downloading (TikTok, Instagram, Pinterest, Twitter/X)."""
     temp_dir = tempfile.mkdtemp(prefix="tg_bot_vids_")
     
     url = html.unescape(url).strip()
@@ -514,17 +621,16 @@ async def download_media(url: str, format_type: str = "video", progress_callback
         if d['status'] == 'downloading':
             percent_str = d.get('_percent_str', '').strip()
             if percent_str:
-                # Remove ANSI escape codes that yt-dlp sometimes adds
                 percent_str = re.sub(r'\x1b\[[0-9;]*m', '', percent_str)
                 asyncio.run_coroutine_threadsafe(progress_callback(percent_str), loop)
     
     try:
-        # Route TikTok through dedicated API downloader first for complete audio+video streams
-        if "tiktok.com" in url.lower() or "vm.tiktok.com" in url.lower() or "vt.tiktok.com" in url.lower():
+        # Route TikTok through dedicated multi-tiered resolvers first
+        if any(d in url.lower() for d in ["tiktok.com", "vm.tiktok.com", "vt.tiktok.com"]):
             try:
                 return await _tiktok_fallback_download(url, temp_dir, format_type)
             except Exception as e:
-                logger.info(f"TikTok API download failed ({e}), trying yt-dlp...")
+                logger.info(f"TikTok Fallback resolvers failed ({e}), attempting yt-dlp as final tier...")
                 
         elif "instagram.com" in url.lower():
             try:
@@ -538,7 +644,7 @@ async def download_media(url: str, format_type: str = "video", progress_callback
             except Exception as e:
                 logger.info(f"Pinterest fallback failed ({e}), trying yt-dlp...")
 
-        # Run yt-dlp in executor for Twitter/X and other platforms
+        # Run yt-dlp in executor for Twitter/X and other platforms or as final fallback
         return await loop.run_in_executor(None, _yt_dlp_download, url, temp_dir, format_type, yt_dlp_progress_hook)
         
     except Exception:
