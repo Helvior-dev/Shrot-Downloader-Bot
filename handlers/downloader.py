@@ -20,23 +20,21 @@ URL_REGEX = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 # Anti-spam lock: set of user_ids currently downloading
 active_downloads = set()
 
-async def send_carousel(message: Message, media_info: MediaInfo, caption: str | None) -> None:
+async def send_carousel(message: Message, media_info: MediaInfo) -> None:
     """Send photo/video albums in Telegram's groups of up to ten items."""
     for offset in range(0, len(media_info.media_paths), 10):
         paths = media_info.media_paths[offset:offset + 10]
         if len(paths) == 1:
             file = FSInputFile(paths[0])
             if os.path.splitext(paths[0])[1].lower() in IMAGE_EXTENSIONS:
-                await message.answer_photo(photo=file, caption=caption if offset == 0 else None, parse_mode=ParseMode.HTML)
+                await message.answer_photo(photo=file)
             else:
-                await message.answer_video(video=file, caption=caption if offset == 0 else None, parse_mode=ParseMode.HTML)
+                await message.answer_video(video=file)
             continue
         media_group = []
-        for i, path in enumerate(paths):
-            options = {"media": FSInputFile(path), "caption": caption if offset == 0 and i == 0 else None,
-                       "parse_mode": ParseMode.HTML}
+        for path in paths:
             kind = InputMediaPhoto if os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS else InputMediaVideo
-            media_group.append(kind(**options))
+            media_group.append(kind(media=FSInputFile(path)))
         await message.answer_media_group(media=media_group)
 
 @router.message(F.text)
@@ -130,40 +128,25 @@ async def process_video_link(message: Message, bot: Bot) -> None:
             except Exception:
                 pass
 
-        caption_parts = []
-        if media_info.title and media_info.title != "No Title":
-            caption_parts.append(f"<b>{html.quote(media_info.title[:100])}</b>")
-        if media_info.uploader:
-            caption_parts.append(f"By: {html.quote(str(media_info.uploader))}")
-        caption = "\n".join(caption_parts) if caption_parts else None
-
         if media_info.media_type == "carousel" and media_info.media_paths:
-            await send_carousel(message, media_info, caption)
+            await send_carousel(message, media_info)
 
         elif media_info.media_type == "photo" and media_info.filepath:
             photo_file = FSInputFile(media_info.filepath)
             await message.answer_photo(
                 photo=photo_file,
-                caption=caption,
-                parse_mode=ParseMode.HTML
             )
 
         elif media_info.media_type == "audio" and media_info.filepath:
             audio_file = FSInputFile(media_info.filepath)
             await message.answer_audio(
                 audio=audio_file,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                title=media_info.title[:50] if media_info.title else "Audio",
-                performer=media_info.uploader or "Downloader"
             )
 
         elif media_info.filepath:
             video_file = FSInputFile(media_info.filepath)
             await message.answer_video(
                 video=video_file,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
                 duration=media_info.duration or 0,
                 width=media_info.width or 0,
                 height=media_info.height or 0,
@@ -181,9 +164,6 @@ async def process_video_link(message: Message, bot: Bot) -> None:
                 await progress_msg.delete()
             except Exception:
                 pass
-
-        # Send follow-up confirmation
-        await message.answer("Done. Send another link to download more media.", reply_markup=get_main_keyboard())
 
     except Exception as e:
         logger.error(f"Error sending media: {e}", exc_info=True)

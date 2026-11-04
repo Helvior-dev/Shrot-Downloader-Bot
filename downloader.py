@@ -334,22 +334,46 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
         title_match = re.search(r'<title>([^<]+)</title>', content)
     title = title_match.group(1) if title_match else "Pinterest Pin"
 
-    if og_video:
+    # Story pins commonly expose only the thumbnail in og:image; their video
+    # URL is stored in the pin's embedded data instead of og:video.
+    pin_match = re.search(r'/pin/(\d+)', urllib.parse.urlsplit(url).path)
+    pin_id = pin_match.group(1) if pin_match else None
+    story_sections = []
+    pin_sections = []
+    if pin_id:
+        for match in re.finditer(r'"(?:entityId|id)":"' + pin_id + r'"', content):
+            section = content[match.end():match.end() + 16000].split('</script>', 1)[0]
+            pin_sections.append(section)
+            story_start = section.find('"storyPinData":')
+            if 0 <= story_start < 8000:
+                story_sections.append(section[story_start:])
+
+    story_video = (any('"StoryPinVideoBlock"' in section for section in story_sections)
+                   or any('"is_video":true' in section[:4000] for section in pin_sections))
+    mp4_match = next((match for section in story_sections if '"StoryPinVideoBlock"' in section
+                      if (match := re.search(
+                          r'"videoList720P":\s*\{\s*"v720P":\s*\{[^{}]*?"url":\s*"(https?://[^" ]+\.mp4[^" ]*)"',
+                          section,
+                      ))), None)
+
+    if mp4_match:
+        target_url = mp4_match.group(1).replace('\\/', '/')
+        ext = ".mp4"
+        media_type = "video"
+    elif og_video:
         target_url = og_video
         ext = ".mp4"
         media_type = "video"
+    elif story_video:
+        # Let yt-dlp handle HLS story pins; never send their preview as a photo.
+        raise DownloadError("Pinterest video has no direct MP4 URL; trying yt-dlp.")
     elif og_image:
         target_url = og_image
         ext = os.path.splitext(target_url)[1].lower() or ".jpg"
         media_type = "photo"
     else:
-        video_urls = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', content)
         image_urls = re.findall(r'https?://i\.pinimg\.com/(?:originals|736x|564x|474x)/[a-zA-Z0-9/_.\-]+\.(?:jpg|jpeg|png|webp)', content)
-        if video_urls:
-            target_url = video_urls[0]
-            ext = ".mp4"
-            media_type = "video"
-        elif image_urls:
+        if image_urls:
             target_url = image_urls[0]
             ext = os.path.splitext(target_url)[1].lower() or ".jpg"
             media_type = "photo"
@@ -364,10 +388,7 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
     except FileTooLargeError:
         raise
     except Exception as e:
-        if og_image and target_url != og_image:
-            await download_file_aiohttp(og_image, filepath, headers)
-        else:
-            raise DownloadError(f"Failed to download media file: {e}")
+        raise DownloadError(f"Failed to download media file: {e}") from e
 
     if media_type == "video":
         check_file_size_limit(filepath)

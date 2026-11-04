@@ -22,12 +22,13 @@ TEST_TEMP_DIR = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "T
 
 
 class FakeResponse:
-    def __init__(self, chunks, content_length=None, status=200, headers=None):
+    def __init__(self, chunks, content_length=None, status=200, headers=None, body=""):
         self.content_length = content_length
         self.chunks = chunks
         self.content = self
         self.status = status
         self.headers = headers or {}
+        self.body = body
 
     async def __aenter__(self):
         return self
@@ -37,6 +38,9 @@ class FakeResponse:
 
     def raise_for_status(self):
         pass
+
+    async def text(self):
+        return self.body
 
     async def iter_chunked(self, _size):
         for chunk in self.chunks:
@@ -95,6 +99,67 @@ class AccessTests(unittest.TestCase):
 
 
 class DownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pinterest_story_video_uses_mp4_instead_of_preview(self):
+        pin_id = "607282331046601700"
+        page = (f'<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+                f'<script>{{"id":"{pin_id}","storyPinData":{{"pages":[{{"blocks":['
+                '{"__typename":"StoryPinVideoBlock","videoDataV2":{'
+                '"videoList720P":{"v720P":{"url":"https://v1.pinimg.com/video_720w.mp4"}}'
+                '}}]}}]}}</script>')
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.aiohttp, "ClientSession", return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, "download_file_aiohttp", new_callable=AsyncMock) as download:
+            result = await downloader._pinterest_fallback_download(
+                f"https://es.pinterest.com/pin/{pin_id}/", folder)
+        self.assertEqual(result.media_type, "video")
+        self.assertEqual(download.await_args.args[0], "https://v1.pinimg.com/video_720w.mp4")
+
+    async def test_pinterest_failed_video_does_not_send_thumbnail(self):
+        pin_id = "607282331046601700"
+        page = (f'<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+                f'<script>{{"entityId":"{pin_id}","storyPinData":{{"pages":[{{"blocks":['
+                '{"__typename":"StoryPinVideoBlock","videoDataV2":{'
+                '"videoList720P":{"v720P":{"url":"https://v1.pinimg.com/video.mp4"}}'
+                '}}]}}]}}</script>')
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.aiohttp, "ClientSession", return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, "download_file_aiohttp", new_callable=AsyncMock,
+                          side_effect=OSError("video unavailable")) as download:
+            with self.assertRaises(downloader.DownloadError):
+                await downloader._pinterest_fallback_download(f"https://es.pinterest.com/pin/{pin_id}/", folder)
+        download.assert_awaited_once()
+
+    async def test_pinterest_story_without_mp4_never_sends_preview(self):
+        pin_id = "607282331046601700"
+        page = (f'<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+                f'<script>{{"id":"{pin_id}","storyPinData":{{"pages":[{{"blocks":['
+                '{"__typename":"StoryPinVideoBlock"}]}}]}}</script>')
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.aiohttp, "ClientSession", return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, "download_file_aiohttp", new_callable=AsyncMock) as download:
+            with self.assertRaises(downloader.DownloadError):
+                await downloader._pinterest_fallback_download(f"https://es.pinterest.com/pin/{pin_id}/", folder)
+        download.assert_not_awaited()
+
+    async def test_pinterest_video_pin_without_story_data_never_sends_preview(self):
+        page = ('<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+                '<script>{"id":"123","is_video":true,"videos":{"video_list":{}}}</script>')
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.aiohttp, "ClientSession", return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, "download_file_aiohttp", new_callable=AsyncMock) as download:
+            with self.assertRaises(downloader.DownloadError):
+                await downloader._pinterest_fallback_download("https://www.pinterest.com/pin/123/", folder)
+        download.assert_not_awaited()
+
+    async def test_pinterest_photo_still_uses_image(self):
+        page = '<meta property="og:image" content="https://i.pinimg.com/photo.jpg">'
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.aiohttp, "ClientSession", return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, "download_file_aiohttp", new_callable=AsyncMock) as download:
+            result = await downloader._pinterest_fallback_download("https://www.pinterest.com/pin/123/", folder)
+        self.assertEqual(result.media_type, "photo")
+        self.assertEqual(download.await_args.args[0], "https://i.pinimg.com/photo.jpg")
+
     async def test_start_and_help_messages_use_plain_text(self):
         message = SimpleNamespace(from_user=SimpleNamespace(id=7, username="friend", first_name="Alex"),
                                   answer=AsyncMock())
@@ -280,20 +345,46 @@ class DownloadTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(answer_media_group=AsyncMock(), answer_video=AsyncMock(), answer_photo=AsyncMock())
         paths = [f"{i}.jpg" for i in range(10)] + ["last.mp4"]
         media = downloader.MediaInfo(None, "album", None, None, None, None, media_type="carousel", media_paths=paths)
-        await send_carousel(message, media, "caption")
+        await send_carousel(message, media)
         group = message.answer_media_group.call_args.kwargs["media"]
         self.assertEqual(len(group), 10)
         self.assertIsInstance(group[0], InputMediaPhoto)
-        self.assertEqual(group[0].caption, "caption")
+        self.assertIsNone(group[0].caption)
         message.answer_video.assert_awaited_once()
         self.assertEqual(message.answer_video.call_args.kwargs["video"].path, "last.mp4")
 
         message.answer_media_group.reset_mock()
         message.answer_video.reset_mock()
         media.media_paths = ["first.jpg", "second.mp4"]
-        await send_carousel(message, media, None)
+        await send_carousel(message, media)
         group = message.answer_media_group.call_args.kwargs["media"]
         self.assertIsInstance(group[1], InputMediaVideo)
+        self.assertIsNone(group[1].caption)
+
+    async def test_successful_upload_sends_only_media(self):
+        for media_type, extension, method in (("video", "mp4", "answer_video"),
+                                              ("photo", "jpg", "answer_photo"),
+                                              ("audio", "mp3", "answer_audio")):
+            with self.subTest(media_type=media_type):
+                progress = SimpleNamespace(edit_text=AsyncMock(), delete=AsyncMock())
+                message = SimpleNamespace(
+                    text="https://x.com/user/status/1", from_user=SimpleNamespace(id=71),
+                    chat=SimpleNamespace(id=71), answer=AsyncMock(return_value=progress),
+                    answer_video=AsyncMock(), answer_photo=AsyncMock(), answer_audio=AsyncMock(),
+                )
+                media = downloader.MediaInfo(f"media.{extension}", "Title", None, "TikTok User", None, None,
+                                             media_type=media_type)
+                with patch.dict(os.environ, {"LOADING_STICKER_ID": ""}), \
+                     patch("handlers.downloader.is_user_allowed", return_value=True), \
+                     patch("handlers.downloader.download_media", new_callable=AsyncMock, return_value=media), \
+                     patch("handlers.downloader.cleanup_media"):
+                    await process_video_link(message, SimpleNamespace(send_chat_action=AsyncMock()))
+                self.assertEqual(message.answer.await_count, 1)
+                kwargs = getattr(message, method).call_args.kwargs
+                self.assertNotIn("caption", kwargs)
+                self.assertNotIn("performer", kwargs)
+                self.assertNotIn("title", kwargs)
+                progress.delete.assert_awaited_once()
 
 
 class YtDlpTests(unittest.TestCase):
