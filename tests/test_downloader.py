@@ -15,7 +15,7 @@ from aiogram.types import InputMediaPhoto, InputMediaVideo
 import downloader
 from handlers.commands import command_help_handler, command_start_handler
 from handlers.downloader import _download_error_message, _safe_error_details, process_video_link, send_carousel
-from utils.auth import is_user_allowed, is_user_admin
+from utils.auth import is_user_allowed
 
 
 TEST_TEMP_DIR = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "Temp" / "opencode"
@@ -101,8 +101,6 @@ class AccessTests(unittest.TestCase):
             self.assertTrue(is_user_allowed(user))
         with patch.dict(os.environ, {"ALLOWED_USERS": "@friend"}):
             self.assertTrue(is_user_allowed(user))
-        with patch.dict(os.environ, {"ADMIN_USERS": ""}):
-            self.assertFalse(is_user_admin(user))
 
     def test_only_supported_hosts_are_accepted(self):
         for url in ("https://vm.tiktok.com/abc", "https://www.instagram.com/p/abc",

@@ -9,6 +9,7 @@ Send the bot a TikTok, Instagram, Pinterest or X link. It downloads the media an
 - Allows one download at a time per user. Request files are removed after delivery or failure; stale folders created by this version are cleaned after 24 hours.
 - Starts an HTTP health endpoint when `PORT` is set. It also pings itself, but this does not guarantee that a free hosting instance stays awake.
 - Uses English messages. Download percentages are available for yt-dlp downloads.
+- Shows short download errors to users; diagnostic details are kept in server logs with URLs and bot tokens redacted.
 
 ## Supported platforms
 
@@ -36,8 +37,8 @@ Python dependencies are listed in `requirements.txt`.
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/Helvior-dev/Logovo-Dushnil-Downloader-bot.git
-   cd Logovo-Dushnil-Downloader-bot
+    git clone https://github.com/Helvior-dev/Shrot-Downloader-Bot.git
+    cd Shrot-Downloader-Bot
    ```
 
 2. **Configure environment variables:**
