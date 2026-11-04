@@ -147,7 +147,6 @@ async def process_video_link(message: Message, bot: Bot) -> None:
             video_file = FSInputFile(media_info.filepath)
             await message.answer_video(
                 video=video_file,
-                duration=media_info.duration or 0,
                 width=media_info.width or 0,
                 height=media_info.height or 0,
                 supports_streaming=True

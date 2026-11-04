@@ -470,7 +470,7 @@ class DownloadTests(unittest.IsolatedAsyncioTestCase):
                     chat=SimpleNamespace(id=71), answer=AsyncMock(return_value=progress),
                     answer_video=AsyncMock(), answer_photo=AsyncMock(), answer_audio=AsyncMock(),
                 )
-                media = downloader.MediaInfo(f"media.{extension}", "Title", None, "TikTok User", None, None,
+                media = downloader.MediaInfo(f"media.{extension}", "Title", 8.5, "TikTok User", None, None,
                                              media_type=media_type)
                 with patch.dict(os.environ, {"LOADING_STICKER_ID": ""}), \
                      patch("handlers.downloader.is_user_allowed", return_value=True), \
@@ -482,6 +482,7 @@ class DownloadTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("caption", kwargs)
                 self.assertNotIn("performer", kwargs)
                 self.assertNotIn("title", kwargs)
+                self.assertNotIn("duration", kwargs)
                 progress.delete.assert_awaited_once()
 
 
