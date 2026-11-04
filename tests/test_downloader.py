@@ -22,13 +22,14 @@ TEST_TEMP_DIR = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "T
 
 
 class FakeResponse:
-    def __init__(self, chunks, content_length=None, status=200, headers=None, body=""):
+    def __init__(self, chunks, content_length=None, status=200, headers=None, body="", json_data=None):
         self.content_length = content_length
         self.chunks = chunks
         self.content = self
         self.status = status
         self.headers = headers or {}
         self.body = body
+        self.json_data = json_data
 
     async def __aenter__(self):
         return self
@@ -41,6 +42,9 @@ class FakeResponse:
 
     async def text(self):
         return self.body
+
+    async def json(self):
+        return self.json_data
 
     async def iter_chunked(self, _size):
         for chunk in self.chunks:
@@ -99,6 +103,99 @@ class AccessTests(unittest.TestCase):
 
 
 class DownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pinterest_api_detects_story_video_with_false_video_flag(self):
+        pin_id = "607282331046601700"
+        payload = {'resource_response': {'status': 'success', 'data': {
+            'id': pin_id, 'is_video': False, 'videos': None,
+            'story_pin_data': {'pages': [{'blocks': [{'video': {'video_list': {
+                'V_HLSV3_MOBILE': {'url': 'https://v1.pinimg.com/story.m3u8'}
+            }}}]}]}
+        }}}
+        with patch.object(downloader.aiohttp, 'ClientSession',
+                          return_value=FakeSession(FakeResponse([], json_data=payload))):
+            self.assertTrue(await downloader._pinterest_pin_is_video(pin_id))
+
+    async def test_pinterest_api_rejects_unverified_metadata(self):
+        with patch.object(downloader.aiohttp, 'ClientSession',
+                          return_value=FakeSession(FakeResponse([], json_data={}))):
+            with self.assertRaises(downloader.DownloadError):
+                await downloader._pinterest_pin_is_video('123')
+
+    async def test_pinterest_preview_is_rejected_when_api_reports_video(self):
+        page = '<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.aiohttp, 'ClientSession',
+                          return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, '_pinterest_pin_is_video', new_callable=AsyncMock,
+                          return_value=True) as check, \
+             patch.object(downloader, 'download_file_aiohttp', new_callable=AsyncMock) as download:
+            with self.assertRaises(downloader.DownloadError):
+                await downloader._pinterest_fallback_download('https://es.pinterest.com/pin/607282331046601700/', folder)
+        check.assert_awaited_once_with('607282331046601700')
+        download.assert_not_awaited()
+
+    async def test_pinterest_video_uses_yt_dlp_when_page_only_has_preview(self):
+        page = '<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.tempfile, 'gettempdir', return_value=folder), \
+             patch.object(downloader.aiohttp, 'ClientSession',
+                          return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, '_pinterest_pin_is_video', new_callable=AsyncMock,
+                          return_value=True), \
+             patch.object(downloader, 'download_file_aiohttp', new_callable=AsyncMock) as image_download, \
+             patch.object(downloader, '_yt_dlp_download') as yt_download:
+            def download_video(_url, output_dir, _format, _hook):
+                path = Path(output_dir) / 'video.mp4'
+                path.write_bytes(b'video')
+                return downloader.MediaInfo(str(path), 'title', None, None, None, None, media_type='video')
+
+            yt_download.side_effect = download_video
+            media = await downloader.download_media('https://es.pinterest.com/pin/607282331046601700/')
+            self.assertEqual(media.media_type, 'video')
+            downloader.cleanup_media(media)
+        image_download.assert_not_awaited()
+        yt_download.assert_called_once()
+
+    async def test_pinterest_refuses_yt_dlp_thumbnail_for_video_pin(self):
+        page = '<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.tempfile, 'gettempdir', return_value=folder), \
+             patch.object(downloader.aiohttp, 'ClientSession',
+                          return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, '_pinterest_pin_is_video', new_callable=AsyncMock, return_value=True), \
+             patch.object(downloader, 'download_file_aiohttp', new_callable=AsyncMock) as image_download, \
+             patch.object(downloader, '_yt_dlp_download') as yt_download:
+            def download_preview(_url, output_dir, _format, _hook):
+                path = Path(output_dir) / 'preview.jpg'
+                path.write_bytes(b'photo')
+                return downloader.MediaInfo(str(path), 'title', None, None, None, None, media_type='photo')
+
+            yt_download.side_effect = download_preview
+            with self.assertRaisesRegex(downloader.DownloadError, 'refusing to send its preview'):
+                await downloader.download_media('https://es.pinterest.com/pin/607282331046601700/')
+        image_download.assert_not_awaited()
+        self.assertEqual(list(Path(folder).iterdir()) if Path(folder).exists() else [], [])
+
+    async def test_pinterest_refuses_photo_when_metadata_is_unavailable(self):
+        page = '<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
+             patch.object(downloader.tempfile, 'gettempdir', return_value=folder), \
+             patch.object(downloader.aiohttp, 'ClientSession',
+                          return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, '_pinterest_pin_is_video', new_callable=AsyncMock,
+                          side_effect=downloader.DownloadError('API unavailable')), \
+             patch.object(downloader, 'download_file_aiohttp', new_callable=AsyncMock) as image_download, \
+             patch.object(downloader, '_yt_dlp_download') as yt_download:
+            def download_preview(_url, output_dir, _format, _hook):
+                path = Path(output_dir) / 'preview.jpg'
+                path.write_bytes(b'photo')
+                return downloader.MediaInfo(str(path), 'title', None, None, None, None, media_type='photo')
+
+            yt_download.side_effect = download_preview
+            with self.assertRaisesRegex(downloader.DownloadError, 'pin type could not be verified'):
+                await downloader.download_media('https://es.pinterest.com/pin/607282331046601700/')
+        image_download.assert_not_awaited()
+
     async def test_pinterest_story_video_uses_mp4_instead_of_preview(self):
         pin_id = "607282331046601700"
         page = (f'<meta property="og:image" content="https://i.pinimg.com/preview.jpg">'
@@ -155,6 +252,7 @@ class DownloadTests(unittest.IsolatedAsyncioTestCase):
         page = '<meta property="og:image" content="https://i.pinimg.com/photo.jpg">'
         with tempfile.TemporaryDirectory(dir=TEST_TEMP_DIR) as folder, \
              patch.object(downloader.aiohttp, "ClientSession", return_value=FakeSession(FakeResponse([], body=page))), \
+             patch.object(downloader, '_pinterest_pin_is_video', new_callable=AsyncMock, return_value=False), \
              patch.object(downloader, "download_file_aiohttp", new_callable=AsyncMock) as download:
             result = await downloader._pinterest_fallback_download("https://www.pinterest.com/pin/123/", folder)
         self.assertEqual(result.media_type, "photo")

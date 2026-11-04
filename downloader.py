@@ -76,6 +76,12 @@ class MediaInfo:
 class DownloadError(Exception):
     pass
 
+class PinterestVideoFallback(DownloadError):
+    """The pin is a video; the thumbnail must not be sent as a photo."""
+
+class PinterestUnverifiedMedia(DownloadError):
+    """Photo metadata is unavailable, so the image may be a video preview."""
+
 class FileTooLargeError(DownloadError):
     pass
 
@@ -297,6 +303,31 @@ async def _instagram_fallback_download(url: str, output_dir: str) -> MediaInfo:
             media_paths=img_paths
         )
 
+async def _pinterest_pin_is_video(pin_id: str) -> bool:
+    """Check pin media blocks; Story Pins may report is_video=false."""
+    params = {'data': json.dumps({'options': {'id': pin_id, 'field_set_key': 'detailed'}})}
+    headers = {'User-Agent': 'Mozilla/5.0', 'X-Pinterest-PWS-Handler': 'www/[username].js'}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.get('https://www.pinterest.com/resource/PinResource/get/',
+                                   params=params, headers=headers, proxy=PROXY_URL,
+                                   allow_redirects=False) as resp:
+                if resp.status != 200:
+                    raise DownloadError(f"Pinterest metadata returned HTTP {resp.status}.")
+                response = await resp.json()
+        resource = response.get('resource_response') or {}
+        pin = resource.get('data') or {}
+        if resource.get('status') != 'success' or str(pin.get('id')) != pin_id:
+            raise DownloadError("Pinterest pin metadata is unavailable.")
+        pages = (pin.get('story_pin_data') or {}).get('pages') or []
+        return bool(pin.get('is_video') or (pin.get('videos') or {}).get('video_list')
+                    or any(block.get('video') for page in pages for block in page.get('blocks') or []))
+    except DownloadError:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as e:
+        raise DownloadError(f"Could not verify Pinterest pin type: {e}") from e
+
+
 async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
     """Fallback downloader for Pinterest pins (photos & videos)."""
     headers = {
@@ -366,7 +397,7 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
         media_type = "video"
     elif story_video:
         # Let yt-dlp handle HLS story pins; never send their preview as a photo.
-        raise DownloadError("Pinterest video has no direct MP4 URL; trying yt-dlp.")
+        raise PinterestVideoFallback("Pinterest video has no direct MP4 URL; trying yt-dlp.")
     elif og_image:
         target_url = og_image
         ext = os.path.splitext(target_url)[1].lower() or ".jpg"
@@ -380,6 +411,15 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
         else:
             raise DownloadError("No media found on Pinterest pin.")
 
+    if media_type == "photo" and pin_id:
+        try:
+            is_video = await _pinterest_pin_is_video(pin_id)
+        except DownloadError as e:
+            raise PinterestUnverifiedMedia("Pinterest pin type could not be verified.") from e
+        if is_video:
+            # The page may contain only a preview; yt-dlp can extract the HLS video.
+            raise PinterestVideoFallback("Pinterest pin contains video; trying yt-dlp instead of its preview.")
+
     file_id = f"{uuid.uuid4()}{ext}"
     filepath = os.path.join(output_dir, file_id)
 
@@ -388,7 +428,8 @@ async def _pinterest_fallback_download(url: str, output_dir: str) -> MediaInfo:
     except FileTooLargeError:
         raise
     except Exception as e:
-        raise DownloadError(f"Failed to download media file: {e}") from e
+        error = PinterestVideoFallback if media_type == 'video' else DownloadError
+        raise error(f"Failed to download media file: {e}") from e
 
     if media_type == "video":
         check_file_size_limit(filepath)
@@ -754,6 +795,8 @@ async def download_media(url: str, format_type: str = "video", progress_callback
             url = await _expand_short_url(url)
         # Route TikTok through dedicated multi-tiered resolvers first
         host = urllib.parse.urlsplit(url).hostname or ''
+        pinterest_video_expected = False
+        pinterest_photo_unverified = False
         if host == 'tiktok.com' or host.endswith('.tiktok.com'):
             try:
                 media_info = await _tiktok_fallback_download(url, temp_dir, format_type)
@@ -780,6 +823,8 @@ async def download_media(url: str, format_type: str = "video", progress_callback
                 raise
             except Exception as e:
                 logger.info(f"Pinterest fallback failed ({e}), trying yt-dlp...")
+                pinterest_video_expected = isinstance(e, PinterestVideoFallback)
+                pinterest_photo_unverified = isinstance(e, PinterestUnverifiedMedia)
                 media_info = None
         else:
             media_info = None
@@ -787,6 +832,11 @@ async def download_media(url: str, format_type: str = "video", progress_callback
         if media_info is None:
             # Run yt-dlp for X and as a fallback for supported sites.
             media_info = await loop.run_in_executor(None, _yt_dlp_download, url, temp_dir, format_type, yt_dlp_progress_hook)
+
+        if pinterest_video_expected and media_info.media_type != 'video':
+            raise DownloadError("Pinterest video could not be downloaded; refusing to send its preview.")
+        if pinterest_photo_unverified and media_info.media_type == 'photo':
+            raise DownloadError("Pinterest pin type could not be verified; refusing to send a possible video preview.")
 
         paths = [media_info.filepath] if media_info.filepath else media_info.media_paths
         if not paths or len(paths) > MAX_CAROUSEL_ITEMS:
