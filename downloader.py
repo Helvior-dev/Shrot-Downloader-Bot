@@ -182,7 +182,7 @@ async def _merge_audio_into_video(video_path: str, audio_url: str, output_dir: s
     except FileTooLargeError:
         raise
     except Exception as e:
-        logger.warning(f"Audio merge failed: {e}")
+        logger.warning("Audio merge failed (%s)", type(e).__name__)
         for f in [audio_path, merged_path]:
             if os.path.exists(f):
                 try:
@@ -219,7 +219,7 @@ async def _expand_short_url(url: str) -> str:
     except DownloadError:
         raise
     except Exception as e:
-        logger.debug(f"Failed to expand short URL {clean_url}: {e}")
+        logger.debug("Failed to expand short URL (%s)", type(e).__name__)
     return clean_url
 
 async def _instagram_fallback_download(url: str, output_dir: str) -> MediaInfo:
@@ -606,7 +606,7 @@ async def _tiktok_ssstik_download(url: str, output_dir: str, format_type: str = 
     except FileTooLargeError:
         raise
     except Exception as e:
-        logger.debug(f"SSSTik fallback error: {e}")
+        logger.debug("SSSTik fallback error (%s)", type(e).__name__)
         return None
     return None
 
@@ -622,7 +622,7 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
     except FileTooLargeError:
         raise
     except Exception as e:
-        logger.debug(f"TikWM Tier 1 error: {e}")
+        logger.debug("TikWM Tier 1 error (%s)", type(e).__name__)
 
     # Tier 2: SSSTik Scraper Gateway
     try:
@@ -632,7 +632,7 @@ async def _tiktok_fallback_download(url: str, output_dir: str, format_type: str 
     except FileTooLargeError:
         raise
     except Exception as e:
-        logger.debug(f"SSSTik Tier 2 error: {e}")
+        logger.debug("SSSTik Tier 2 error (%s)", type(e).__name__)
 
     raise DownloadError("All specialized TikTok resolvers failed to retrieve media.")
 
@@ -803,7 +803,7 @@ async def download_media(url: str, format_type: str = "video", progress_callback
             except FileTooLargeError:
                 raise
             except Exception as e:
-                logger.info(f"TikTok Fallback resolvers failed ({e}), attempting yt-dlp as final tier...")
+                logger.info("TikTok resolvers failed (%s); trying yt-dlp", type(e).__name__)
                 media_info = None
         elif host == 'instagram.com' or host.endswith('.instagram.com'):
             try:
@@ -811,7 +811,7 @@ async def download_media(url: str, format_type: str = "video", progress_callback
             except FileTooLargeError:
                 raise
             except Exception as e:
-                logger.info(f"Instagram Instaloader failed ({e}), trying yt-dlp...")
+                logger.info("Instagram resolver failed (%s); trying yt-dlp", type(e).__name__)
                 media_info = None
         elif host == 'pin.it' or host.endswith('.pin.it') or any(
             host == domain or host.endswith('.' + domain) for domain in SUPPORTED_DOMAINS if domain.startswith('pinterest.')
@@ -822,7 +822,7 @@ async def download_media(url: str, format_type: str = "video", progress_callback
             except FileTooLargeError:
                 raise
             except Exception as e:
-                logger.info(f"Pinterest fallback failed ({e}), trying yt-dlp...")
+                logger.info("Pinterest resolver failed (%s); trying yt-dlp", type(e).__name__)
                 pinterest_video_expected = isinstance(e, PinterestVideoFallback)
                 pinterest_photo_unverified = isinstance(e, PinterestUnverifiedMedia)
                 media_info = None

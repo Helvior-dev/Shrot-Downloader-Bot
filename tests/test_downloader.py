@@ -14,7 +14,7 @@ from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 import downloader
 from handlers.commands import command_help_handler, command_start_handler
-from handlers.downloader import process_video_link, send_carousel
+from handlers.downloader import _download_error_message, _safe_error_details, process_video_link, send_carousel
 from utils.auth import is_user_allowed, is_user_admin
 
 
@@ -70,6 +70,28 @@ class FakeSession:
 
 
 class AccessTests(unittest.TestCase):
+    def test_download_errors_have_short_public_messages(self):
+        cases = (
+            ('This post is private: https://example.com/?token=secret', 'unavailable or private'),
+            ('HTTP Error 429: Too Many Requests', 'temporarily restricting'),
+            ('Pinterest pin type could not be verified.', 'Could not verify this Pinterest pin'),
+            ('Some extractor failed at https://example.com/?token=secret', 'Could not download this media'),
+        )
+        for detail, expected in cases:
+            with self.subTest(detail=detail):
+                public = _download_error_message(downloader.DownloadError(detail))
+                self.assertIn(expected, public)
+                self.assertNotIn('https://', public)
+                self.assertNotIn('secret', public)
+
+    def test_diagnostics_redact_urls_and_bot_tokens(self):
+        details = _safe_error_details(ValueError(
+            'Failed at https://host.example/video?token=secret and bot 123456789:ABCdefGhIJKlmNoPQRsTUVwxyXYZ'))
+        self.assertIn('[URL]', details)
+        self.assertIn('[TOKEN]', details)
+        self.assertNotIn('secret', details)
+        self.assertNotIn('ABCdef', details)
+
     def test_whitelist_fails_closed_and_accepts_ids(self):
         user = SimpleNamespace(id=123, username="friend")
         with patch.dict(os.environ, {"ALLOWED_USERS": ""}):
@@ -103,6 +125,22 @@ class AccessTests(unittest.TestCase):
 
 
 class DownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_handler_reports_safe_error_and_keeps_details_in_logs(self):
+        detail = 'This post is private: https://example.com/video?token=secret'
+        progress = SimpleNamespace(edit_text=AsyncMock(), delete=AsyncMock())
+        message = SimpleNamespace(text='https://x.com/user/status/1', from_user=SimpleNamespace(id=71),
+                                  chat=SimpleNamespace(id=71), answer=AsyncMock(return_value=progress))
+        with patch.dict(os.environ, {'LOADING_STICKER_ID': ''}), \
+             patch('handlers.downloader.is_user_allowed', return_value=True), \
+             patch('handlers.downloader.download_media', new_callable=AsyncMock,
+                   side_effect=downloader.DownloadError(detail)), \
+             self.assertLogs('handlers.downloader', 'WARNING') as logs:
+            await process_video_link(message, SimpleNamespace(send_chat_action=AsyncMock()))
+        self.assertIn('unavailable or private', progress.edit_text.call_args.args[0])
+        self.assertNotIn('secret', str(progress.edit_text.call_args))
+        self.assertIn('[URL]', logs.output[0])
+        self.assertNotIn('secret', logs.output[0])
+
     async def test_pinterest_api_detects_story_video_with_false_video_flag(self):
         pin_id = "607282331046601700"
         payload = {'resource_response': {'status': 'success', 'data': {

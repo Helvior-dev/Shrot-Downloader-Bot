@@ -3,7 +3,8 @@ import re
 import time
 import logging
 import asyncio
-from aiogram import Router, F, Bot, html
+import urllib.parse
+from aiogram import Router, F, Bot
 from aiogram.enums import ParseMode, ChatAction
 from aiogram.types import Message, InputMediaPhoto, InputMediaVideo, FSInputFile
 
@@ -19,6 +20,25 @@ URL_REGEX = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 
 # Anti-spam lock: set of user_ids currently downloading
 active_downloads = set()
+
+def _download_error_message(error: DownloadError) -> str:
+    """Return a brief message without exposing extractor responses or URLs."""
+    details = str(error).lower()
+    if "pin type could not be verified" in details:
+        return "Could not verify this Pinterest pin. Try again later."
+    if "refusing to send its preview" in details or "video could not be downloaded" in details:
+        return "This video is unavailable for download."
+    if any(word in details for word in ("private", "not available", "unavailable", "removed", "404", "login required")):
+        return "This media is unavailable or private. Check the link."
+    if any(word in details for word in ("429", "rate limit", "too many requests", "403", "forbidden")):
+        return "The platform is temporarily restricting downloads. Try again later."
+    return "Could not download this media. Check the link or try again later."
+
+def _safe_error_details(error: Exception) -> str:
+    """Keep diagnostic text in logs without logging full URLs or bot tokens."""
+    details = re.sub(r'https?://[^\s<>"\']+', '[URL]', str(error))
+    details = re.sub(r'\b\d{6,}:[A-Za-z0-9_-]{20,}\b', '[TOKEN]', details)
+    return details[:300]
 
 async def send_carousel(message: Message, media_info: MediaInfo) -> None:
     """Send photo/video albums in Telegram's groups of up to ten items."""
@@ -67,6 +87,7 @@ async def process_video_link(message: Message, bot: Bot) -> None:
         return
 
     active_downloads.add(user_id)
+    platform = urllib.parse.urlsplit(url).hostname or "unknown"
     progress_msg = None
     sticker_msg = None
     sticker_id = os.getenv("LOADING_STICKER_ID", "").strip()
@@ -78,7 +99,7 @@ async def process_video_link(message: Message, bot: Bot) -> None:
                 sticker_msg = await message.answer_sticker(sticker=sticker_id)
                 progress_msg = await message.answer("Downloading media...")
             except Exception as e:
-                logger.warning(f"Failed to send sticker: {e}")
+                logger.warning("Failed to send sticker (%s): %s", type(e).__name__, _safe_error_details(e))
                 progress_msg = await message.answer("Downloading media...")
         else:
             progress_msg = await message.answer("Downloading media...")
@@ -101,23 +122,19 @@ async def process_video_link(message: Message, bot: Bot) -> None:
         try:
             media_info = await download_media(url, format_type="video", progress_callback=update_progress)
         except FileTooLargeError as e:
+            logger.info("Download limit reached for %s (%s): %s", platform, type(e).__name__, _safe_error_details(e))
             if progress_msg:
                 await progress_msg.edit_text(
-                    f"<b>Download limit exceeded</b>\n\n{html.quote(str(e))}",
-                    parse_mode=ParseMode.HTML
+                    "Download limit exceeded. The file or request is too large."
                 )
             return
         except DownloadError as e:
-            clean_error = re.sub(r'\x1b\[[0-9;]*m', '', str(e))
-            if "Unsupported URL" in clean_error:
-                clean_error = "Unsupported URL or private video. Make sure the link is correct."
-            elif "Unexpected response" in clean_error or "extractor" in clean_error.lower():
-                clean_error = "The platform temporarily restricted direct access or the video is private/unavailable. Please try again in a few moments."
+            logger.warning("Download failed for %s (%s): %s", platform, type(e).__name__, _safe_error_details(e))
             if progress_msg:
-                await progress_msg.edit_text(f"Download failed.\n\nDetails: {html.quote(clean_error)}")
+                await progress_msg.edit_text(_download_error_message(e))
             return
         except Exception as e:
-            logger.error(f"Unexpected error: {e}", exc_info=True)
+            logger.error("Unexpected download error for %s (%s): %s", platform, type(e).__name__, _safe_error_details(e))
             if progress_msg:
                 await progress_msg.edit_text("An unexpected error occurred.")
             return
@@ -165,7 +182,7 @@ async def process_video_link(message: Message, bot: Bot) -> None:
                 pass
 
     except Exception as e:
-        logger.error(f"Error sending media: {e}", exc_info=True)
+        logger.error("Telegram upload failed for %s (%s): %s", platform, type(e).__name__, _safe_error_details(e))
         if progress_msg:
             try:
                 await progress_msg.edit_text("Could not send the file to Telegram.")
