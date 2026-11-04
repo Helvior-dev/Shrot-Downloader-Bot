@@ -20,3 +20,7 @@ cookies.txt
 # IDE settings
 .vscode/
 .idea/
+
+# Local development instructions and project state
+AGENTS.md
+PROJECT_STATE.md

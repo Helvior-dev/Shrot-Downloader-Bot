@@ -16,6 +16,7 @@ from aiogram.types import BotCommand
 load_dotenv()
 
 from handlers import commands, downloader
+from downloader import OWNER_MARKER
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -27,41 +28,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 async def clean_temp_directories_task():
-    """Background task to clean orphaned temp directories periodically."""
-    # Also clean up right on startup
-    try:
-        temp_dir = tempfile.gettempdir()
-        pattern = os.path.join(temp_dir, "tg_bot_vids_*")
-        orphaned = glob.glob(pattern)
-        for folder in orphaned:
-            if os.path.isdir(folder):
-                try:
-                    shutil.rmtree(folder)
-                    logger.info(f"Startup: Cleaned up old temp directory: {folder}")
-                except Exception as e:
-                    pass
-    except Exception:
-        pass
-
+    """Clean stale downloads without deleting another active instance's files at startup."""
     while True:
-        await asyncio.sleep(1800) # Run every 30 minutes
         try:
             temp_dir = tempfile.gettempdir()
             pattern = os.path.join(temp_dir, "tg_bot_vids_*")
             orphaned = glob.glob(pattern)
             for folder in orphaned:
                 try:
-                    # Only remove if it's older than 1 hour to avoid race conditions
-                    if os.path.isdir(folder) and os.path.getmtime(folder) < time.time() - 3600:
+                    if (os.path.isdir(folder) and not os.path.islink(folder)
+                            and os.path.isfile(os.path.join(folder, OWNER_MARKER))
+                            and os.path.getmtime(folder) < time.time() - 86400):
                         shutil.rmtree(folder)
                         logger.info(f"Cleaned up orphaned temp directory: {folder}")
                 except Exception as e:
                     logger.warning(f"Failed to remove {folder}: {e}")
         except Exception as e:
             logger.error(f"Error in temp cleanup task: {e}")
+        await asyncio.sleep(1800)
 
 async def self_pinger_task() -> None:
-    """Periodically ping self HTTP server every 10 minutes to prevent Render sleep."""
+    """Periodically ping the HTTP endpoint; hosting may still suspend free instances."""
     await asyncio.sleep(10)
     port = os.getenv("PORT", "10000")
     render_url = os.getenv("RENDER_EXTERNAL_URL", f"http://127.0.0.1:{port}")
@@ -89,8 +76,10 @@ async def start_dummy_web_server() -> None:
 
 async def main() -> None:
     if not BOT_TOKEN:
-        print("❌ ERROR: BOT_TOKEN is not set in .env file!")
-        return
+        raise RuntimeError("BOT_TOKEN is not set in the environment or .env file.")
+
+    if not os.getenv("ALLOWED_USERS", "").strip():
+        raise RuntimeError("ALLOWED_USERS is empty. Configure Telegram user IDs before starting the bot.")
 
     if os.getenv("PORT"):
         await start_dummy_web_server()
@@ -109,10 +98,10 @@ async def main() -> None:
     # Set bot commands in Telegram menu
     await bot.set_my_commands([
         BotCommand(command="start", description="Start the bot"),
-        BotCommand(command="help", description="Supported platforms and formats"),
+        BotCommand(command="help", description="Supported platforms"),
     ])
 
-    print("🚀 Bot is running and ready for messages!")
+    print("Bot is running and ready for messages.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

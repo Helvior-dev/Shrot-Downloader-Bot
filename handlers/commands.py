@@ -5,49 +5,51 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message
 
 from keyboards.reply import get_main_keyboard
-from utils.auth import is_user_allowed, is_user_admin
+from downloader import MAX_FILE_SIZE, MAX_PHOTO_SIZE
+from utils.auth import is_user_allowed
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 
 @router.message(CommandStart())
-@router.message(F.text == "🚀 Start")
+@router.message(F.text == "Start")
 async def command_start_handler(message: Message) -> None:
     user = message.from_user
+    if user is None:
+        return
     logger.info(f"Start command from {user.username} (ID: {user.id})")
     if not is_user_allowed(user):
         logger.warning(f"Access denied for user {user.username} (ID: {user.id})")
         await message.answer(
-            f"🔒 <b>Private Bot Mode</b>\n\n"
-            f"Your Telegram Username: @{user.username or 'none'}\n"
+            f"<b>Access denied</b>\n\n"
             f"Your Telegram ID: <code>{user.id}</code>\n\n"
-            f"Access denied. Please contact admin.",
+            f"Ask the bot owner to add your ID to ALLOWED_USERS.",
             parse_mode=ParseMode.HTML
         )
         return
 
     user_name = html.bold(user.first_name)
-    welcome_text = f"Hi, {user_name}! 👋\n\nSend me any link to download video, photo, or carousel!"
+    welcome_text = f"Hi, {user_name}. Send a TikTok, Instagram, Pinterest, or X link to download media."
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML)
 
 @router.message(Command("help"))
-@router.message(F.text == "ℹ️ Help")
+@router.message(F.text == "Help")
 async def command_help_handler(message: Message) -> None:
     user = message.from_user
+    if user is None:
+        return
     logger.info(f"Help command from {user.username} (ID: {user.id})")
     if not is_user_allowed(user):
         return
 
     help_text = (
-        "ℹ️ <b>Supported Services:</b>\n\n"
-        "🌐 <b>Supported Platforms:</b>\n"
-        "• <b>TikTok</b> (Videos & Photo Carousels)\n"
-        "• <b>Instagram</b> (Reels, Videos, Photos & Carousels)\n"
-        "• <b>Pinterest</b> (Photos & Videos)\n"
-        "• <b>Twitter / X</b> (Videos & Photos)\n\n"
-        "Just send any link to download directly 🚀"
+        "<b>Supported platforms</b>\n"
+        "TikTok: videos and photo carousels\n"
+        "Instagram: reels, videos, photos and carousels\n"
+        "Pinterest: photos and videos\n"
+        "X: videos and photos\n\n"
+        "Send a link to download the media.\n"
+        f"Video/audio limit: {MAX_FILE_SIZE // 1_000_000} MB; photo limit: {MAX_PHOTO_SIZE // 1_000_000} MB."
     )
     await message.answer(help_text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML)
-
-
